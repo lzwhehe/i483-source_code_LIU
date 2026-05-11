@@ -1,6 +1,6 @@
 # I483 Task 1 — Multi-Sensor Data Acquisition Report
 
-**Author:** [Your Name / Student ID]
+**Author:** LIU ZHUOWEN | s2410431
 **Date:** May 2026
 
 ---
@@ -46,7 +46,7 @@ Both readings are stable across the 15-second window
 confirming that the 64x oversampling configuration delivers very
 low-noise output as expected from the datasheet.
 
-**Source code:** [GitHub link to be filled in]
+ 
 
 ---
 
@@ -93,7 +93,7 @@ about 420 ppm), temperature near 26 °C, and humidity around 41–42%RH.
 The slight upward trend in humidity reflects normal local fluctuation
 during the 15-second window.
 
-**Source code:** [GitHub link to be filled in]
+ 
 
 ---
 
@@ -143,7 +143,7 @@ corresponding to intentionally shading the sensor with a hand. The
 DATA1/DATA0 ratio stays in the first segment (< 0.595) throughout,
 which corresponds to the indoor LED lighting in the test environment.
 
-**Source code:** [GitHub link to be filled in]
+ 
 
 ---
 
@@ -194,7 +194,6 @@ conversion factor, while RPR-0521rs uses a two-channel ratio-based
 piecewise formula that compensates for the spectral content of the
 light source.
 
-**Source code:** [GitHub link to be filled in]
 
 ---
 
