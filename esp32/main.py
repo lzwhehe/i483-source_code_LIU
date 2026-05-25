@@ -245,7 +245,7 @@ async def led_task(led):
             led.write()
             await asyncio.sleep(0.5)
         else:
-            led[0] = (0, 0, 0)
+            led[0] = (0, 255, 0)
             led.write()
             await asyncio.sleep(0.1)
 
