@@ -1,42 +1,38 @@
 """
-I483 課題3 - 項目1(a)(b)  Stream Analytics with Apache Flink (PyFlink)
+I483 Kadai 3 - Task 1(a)(b) Stream Analytics with Apache Flink / PyFlink.
 
-For every primary sensor listed in config.SENSORS this job:
-  1. consumes the raw String values from  i483-sensors-<STUDENT>-<SENSOR>-<DATA_TYPE>
-  2. computes min / max / avg over a sliding event-time window
-     (size = 5 min, slide = 30 s  -> a result every 30 s covering the last 5 min)
-  3. publishes each statistic, as a String, to
-       i483-sensors-<STUDENT>-analytics-<STUDENT>_<SENSOR>_<min|max|avg>-<DATA_TYPE>
-
-Because the whole sensor set is driven from config.py, the SAME code covers
-  - 1(a): keep one (sensor, data_type) in config.SENSORS
-  - 1(b): list every primary sensor you operate
-
-Run:
-  python analytics_job.py
-(see README.md for cluster submission / required JARs)
+This follows the supplementary Kadai 3 slides:
+  1. consume the shared Kafka topic i483-allsensors
+  2. validate records formatted as topic,timestamp,value
+  3. filter to this student's primary sensor topics
+  4. key by the original sensor topic
+  5. compute min / max / avg with a 5-minute sliding processing-time window
+     that emits every 30 seconds
+  6. publish every result to i483-fvtt as topic,value
 """
 
-from pyflink.common import Types, WatermarkStrategy, Duration, Time
-from pyflink.common.serialization import SimpleStringSchema
-from pyflink.datastream import StreamExecutionEnvironment, RuntimeExecutionMode
-from pyflink.datastream.connectors.kafka import (
-    KafkaSource,
-    KafkaOffsetsInitializer,
-    KafkaSink,
-    KafkaRecordSerializationSchema,
-    DeliveryGuarantee,
-)
-from pyflink.datastream.functions import AggregateFunction
-from pyflink.datastream.window import SlidingEventTimeWindows
-
 from pathlib import Path
+
+from pyflink.common import Time, Types, WatermarkStrategy
+from pyflink.common.serialization import SimpleStringSchema
+from pyflink.datastream import RuntimeExecutionMode, StreamExecutionEnvironment
+from pyflink.datastream.connectors.kafka import (
+    DeliveryGuarantee,
+    KafkaOffsetsInitializer,
+    KafkaRecordSerializationSchema,
+    KafkaSink,
+    KafkaSource,
+)
+from pyflink.datastream.functions import ProcessWindowFunction
+from pyflink.datastream.window import SlidingProcessingTimeWindows
 
 import config
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-KAFKA_CONNECTOR_JAR = PROJECT_ROOT / ".tools" / "jars" / "flink-sql-connector-kafka-3.0.2-1.18.jar"
+KAFKA_CONNECTOR_JAR = (
+    PROJECT_ROOT / ".tools" / "jars" / "flink-sql-connector-kafka-3.0.2-1.18.jar"
+)
 
 
 def configure_environment(env):
@@ -46,106 +42,120 @@ def configure_environment(env):
     else:
         raise FileNotFoundError(
             f"Kafka connector JAR not found: {KAFKA_CONNECTOR_JAR}. "
-            "Download flink-sql-connector-kafka-3.0.2-1.18.jar into .tools/jars."
+            "Run setup_env.ps1 to download it."
         )
 
 
-# --------------------------------------------------------------------------- #
-# Aggregate: keep (min, max, sum, count) incrementally, emit (min, max, avg).  #
-# --------------------------------------------------------------------------- #
-class MinMaxAvg(AggregateFunction):
-    def create_accumulator(self):
-        # min, max, sum, count
-        return (float("inf"), float("-inf"), 0.0, 0)
-
-    def add(self, value, acc):
-        mn, mx, s, c = acc
-        try:
-            v = float(value)
-        except (TypeError, ValueError):
-            # ignore non-numeric / malformed payloads
-            return acc
-        return (min(mn, v), max(mx, v), s + v, c + 1)
-
-    def get_result(self, acc):
-        mn, mx, s, c = acc
-        if c == 0:
-            return (None, None, None)
-        return (mn, mx, s / c)
-
-    def merge(self, a, b):
-        return (min(a[0], b[0]), max(a[1], b[1]), a[2] + b[2], a[3] + b[3])
+def _fmt(value: float) -> str:
+    return f"{value:.{config.VALUE_DECIMALS}f}"
 
 
-def _fmt(v) -> str:
-    return f"{v:.{config.VALUE_DECIMALS}f}"
+def parse_allsensors_record(record: str):
+    """Validate i483-allsensors records and emit (topic, timestamp_ms, value)."""
+    parts = [part.strip() for part in record.split(",", 2)]
+    if len(parts) != 3:
+        return []
+
+    topic, timestamp_text, value_text = parts
+    if topic not in config.INPUT_TOPICS:
+        return []
+
+    try:
+        timestamp_ms = int(timestamp_text)
+        value = float(value_text)
+    except ValueError:
+        return []
+
+    return [(topic, timestamp_ms, value)]
 
 
-def build_branch(env, sensor: str, data_type: str):
-    """Wire one full source -> window -> 3 sinks pipeline for one sensor stream."""
-    in_topic = config.input_topic(sensor, data_type)
+def sensor_dtype_from_topic(topic: str):
+    prefix = f"i483-sensors-{config.STUDENT}-"
+    if not topic.startswith(prefix):
+        return None
 
+    rest = topic[len(prefix):]
+    try:
+        sensor, data_type = rest.split("-", 1)
+    except ValueError:
+        return None
+
+    return sensor, data_type
+
+
+class EmitMinMaxAvg(ProcessWindowFunction):
+    def process(self, key, context, elements):
+        values = [float(row[2]) for row in elements]
+        if not values:
+            return []
+
+        parsed = sensor_dtype_from_topic(str(key))
+        if parsed is None:
+            return []
+        sensor, data_type = parsed
+
+        stats = {
+            "min": min(values),
+            "max": max(values),
+            "avg": sum(values) / len(values),
+        }
+
+        output = []
+        for agg in config.AGGREGATIONS:
+            topic = config.output_topic(sensor, agg, data_type)
+            output.append(f"{topic},{_fmt(stats[agg])}")
+        return output
+
+
+def build_pipeline(env):
+    """Wire i483-allsensors -> windowed analytics -> i483-fvtt."""
     source = (
         KafkaSource.builder()
         .set_bootstrap_servers(config.KAFKA_BOOTSTRAP)
-        .set_topics(in_topic)
+        .set_topics(config.ALLSENSORS_TOPIC)
         .set_group_id(config.CONSUMER_GROUP)
         .set_starting_offsets(KafkaOffsetsInitializer.latest())
         .set_value_only_deserializer(SimpleStringSchema())
         .build()
     )
 
-    # Use the Kafka record timestamp as event time (payload is just a value).
-    wm = WatermarkStrategy.for_bounded_out_of_orderness(
-        Duration.of_seconds(config.MAX_OUT_OF_ORDERNESS_SECONDS)
+    stream = env.from_source(
+        source,
+        watermark_strategy=WatermarkStrategy.no_watermarks(),
+        source_name=f"src-{config.ALLSENSORS_TOPIC}",
     )
 
-    stream = env.from_source(source, wm, f"src-{sensor}-{data_type}")
-
-    # Single logical stream -> key by a constant so we can use a keyed window.
     results = (
-        stream.key_by(lambda _v: f"{sensor}:{data_type}", key_type=Types.STRING())
+        stream.flat_map(
+            parse_allsensors_record,
+            output_type=Types.TUPLE([Types.STRING(), Types.LONG(), Types.FLOAT()]),
+        )
+        .key_by(lambda row: row[0], key_type=Types.STRING())
         .window(
-            SlidingEventTimeWindows.of(
+            SlidingProcessingTimeWindows.of(
                 Time.seconds(config.WINDOW_SIZE_SECONDS),
                 Time.seconds(config.WINDOW_SLIDE_SECONDS),
             )
         )
-        .aggregate(
-            MinMaxAvg(),
-            output_type=Types.TUPLE(
-                [Types.FLOAT(), Types.FLOAT(), Types.FLOAT()]
-            ),
-        )
+        .process(EmitMinMaxAvg(), output_type=Types.STRING())
     )
 
-    # One sink per aggregation, each to its own fixed topic (no dynamic routing).
-    agg_index = {"min": 0, "max": 1, "avg": 2}
-    for agg in config.AGGREGATIONS:
-        idx = agg_index[agg]
-        out_topic = config.output_topic(sensor, agg, data_type)
+    if config.PRINT_RESULTS_TO_CONSOLE:
+        results.print("fvtt")
 
-        values = (
-            results.filter(lambda r: r[0] is not None)
-            .map(lambda r, i=idx: _fmt(r[i]), output_type=Types.STRING())
-        )
-
-        if config.PRINT_RESULTS_TO_CONSOLE:
-            values.print(f"{agg}-{sensor}-{data_type}")
-
-        sink = (
-            KafkaSink.builder()
-            .set_bootstrap_servers(config.KAFKA_BOOTSTRAP)
-            .set_record_serializer(
-                KafkaRecordSerializationSchema.builder()
-                .set_topic(out_topic)
-                .set_value_serialization_schema(SimpleStringSchema())
-                .build()
-            )
-            .set_delivery_guarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+    sink = (
+        KafkaSink.builder()
+        .set_bootstrap_servers(config.KAFKA_BOOTSTRAP)
+        .set_record_serializer(
+            KafkaRecordSerializationSchema.builder()
+            .set_topic(config.FVTT_TOPIC)
+            .set_value_serialization_schema(SimpleStringSchema())
             .build()
         )
-        values.sink_to(sink).name(f"sink-{agg}-{sensor}-{data_type}")
+        .set_delivery_guarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+        .build()
+    )
+    results.sink_to(sink).name(f"sink-{config.FVTT_TOPIC}")
 
 
 def main():
@@ -157,10 +167,8 @@ def main():
     if not config.SENSORS:
         raise SystemExit("config.SENSORS is empty -- list your primary sensors.")
 
-    for sensor, data_type in config.SENSORS:
-        build_branch(env, sensor, data_type)
-
-    env.execute(f"{config.STUDENT}-task1-min-max-avg")
+    build_pipeline(env)
+    env.execute(f"{config.STUDENT}-task1-allsensors-to-fvtt")
 
 
 if __name__ == "__main__":

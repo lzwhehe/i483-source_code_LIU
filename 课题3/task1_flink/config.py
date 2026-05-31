@@ -4,10 +4,11 @@ I483 課題3 - Task 1 configuration.
 Values below are filled in from your 課題2 source code
 (esp32/main.py + pc/kafka_processor.py, student LIU ZHUOWEN / s2410431).
 
-Topic naming follows the spec exactly:
+Kafka topics used by the supplementary Kadai 3 instructions:
 
-  input  : i483-sensors-<STUDENT>-<SENSOR>-<DATA_TYPE>
-  output : i483-sensors-<STUDENT>-analytics-<STUDENT>_<SENSOR>_<min|max|avg>-<DATA_TYPE>
+  input stream : i483-allsensors
+  output stream: i483-fvtt
+  output value : i483-sensors-<STUDENT>-analytics-<STUDENT>_<SENSOR>_<min|max|avg>-<DATA_TYPE>,<VALUE>
 
   - STUDENT  : student id with a leading lowercase 's' (s2410431)
   - SENSOR   : uppercase sensor name (SCD41, BH1750, RPR0521, DPS310)
@@ -21,6 +22,8 @@ Topic naming follows the spec exactly:
 STUDENT = "s2410431"                      # from 課題2 source (LIU ZHUOWEN)
 KAFKA_BOOTSTRAP = "150.65.230.59:9092"    # confirmed in 課題2 kafka_processor.py
 CONSUMER_GROUP = f"{STUDENT}-task1-analytics"
+ALLSENSORS_TOPIC = "i483-allsensors"
+FVTT_TOPIC = "i483-fvtt"
 
 # ---------------------------------------------------------------------------
 # 2) WINDOWING (fixed by the assignment)
@@ -69,3 +72,6 @@ def input_topic(sensor: str, data_type: str) -> str:
 def output_topic(sensor: str, agg: str, data_type: str) -> str:
     # i483-sensors-<STUDENT>-analytics-<STUDENT>_<SENSOR>_<agg>-<DATA_TYPE>
     return f"i483-sensors-{STUDENT}-analytics-{STUDENT}_{sensor}_{agg}-{data_type}"
+
+
+INPUT_TOPICS = {input_topic(sensor, data_type) for sensor, data_type in SENSORS}

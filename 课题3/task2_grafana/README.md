@@ -1,57 +1,202 @@
-# 課題3 項目2 — Visualization (instructor-hosted Grafana)
+# Kadai 3 Task 2 - Grafana Visualization
 
-The instructor runs the Grafana + IoTDB stack. You do **not** install anything —
-you just log in and build panels.
+Grafana URL:
 
-- Grafana: **http://150.65.230.59:3000**
-- Example dashboard URL: `http://150.65.230.59:3000/d/adqgh75/s2410431`
-  (each student has their own dashboard named after their id — open/create the
-  one for **your** student number, e.g. `.../s2410431`).
-- The **IoTDB data source is already configured** by the instructor, so just
-  pick it when adding a panel.
+```text
+http://150.65.230.59:3000/d/adqgh75/s2410431?orgId=1&from=now-6h&to=now&timezone=browser
+```
 
-## What to build
+Task 2 is a visualization task. The data path is:
 
-| Panel | Spec | Series in IoTDB | Aggregation by |
-|-------|------|------------------|----------------|
-| 2(a) | 課題2-1a raw | `root.i483.<S>.<SENSOR>.<dtype>` | none (raw) |
-| 2(b) | 課題2-1c rolling average **only** | rolling-avg measurement | upstream (課題2-1c) |
-| 2(c) | 課題3-1a analytics | `root.i483.<S>.analytics.<SENSOR>_<agg>_<dtype>` | **Flink** (項目1) |
-| 2(d) | 課題2-1a via IoTDB aggregation | `root.i483.<S>.<SENSOR>.<dtype>` + `GROUP BY` | **IoTDB** (server-side) |
+```text
+Kafka topics -> IoTDB time series -> Grafana panels
+```
 
-Use the queries in `iotdb_queries.sql` (replace `s2410431` and `SCD41/co2`).
+Your Task 1 Flink job must keep running so the analytics topics continue to
+receive `min / max / avg` values.
 
-Steps:
+## Panels To Create
 
-1. Open your dashboard (or **New dashboard → Add panel**).
-2. Set the data source to the existing **IoTDB** source.
-3. 2(a): plot the raw measurement, no GROUP BY.
-4. 2(b): plot ONLY the rolling-average measurement from 課題2-1c.
-5. 2(c): one panel, three queries (min / max / avg) so the band shows.
-6. 2(d): same raw measurement as 2(a) but `GROUP BY ([$__from,$__to), 30s, 5m)`
-   so IoTDB does the 5-min/30-s average itself (mirrors the Flink job).
+Create or edit the dashboard `s2410431` and add these panels.
 
-## Does the analytics data (2c) already appear?
+### 2(a) Raw time series from Kadai 2 Task 1a
 
-The instructor's infrastructure likely ingests **all** `i483-...` topics into
-IoTDB automatically — including the analytics topics your Flink job (項目1)
-produces. So first just **check IoTDB** for
-`root.i483.<S>.analytics.<SENSOR>_avg_<dtype>`:
+Example sensor: SCD41 CO2.
+
+Panel title:
+
+```text
+2(a) Raw SCD41 CO2
+```
+
+Query:
 
 ```sql
-SHOW TIMESERIES root.i483.<S>.analytics.**
+SELECT co2
+FROM root.devdb.i483.sensors.s2410431.SCD41
+WHERE time >= $__from AND time <= $__to;
 ```
 
-- If it exists → query it directly in panel 2(c). No bridge needed.
-- If it does **not** → run `kafka_to_iotdb.py` (set `INGEST_ANALYTICS=True`,
-  `INGEST_RAW=False`) to land your analytics topics into IoTDB yourself.
+This shows the original raw values sent by the ESP32.
 
-```bash
-pip install kafka-python apache-iotdb
-# edit the CONFIG block (STUDENT, KAFKA_BOOTSTRAP, IOTDB_HOST=150.65.230.59 ...)
-python kafka_to_iotdb.py
+### 2(b) Rolling Average from Kadai 2 Task 1c
+
+Your Kadai 2 processor publishes:
+
+```text
+i483-sensors-s2410431-BH1750_avg-illumination
 ```
 
-> Note: the IoTDB host for the bridge is the instructor's server
-> (`150.65.230.59`), and you need its IoTDB port/credentials. If the instructor
-> already ingests everything, you can ignore the bridge entirely.
+The usual IoTDB path for that topic is:
+
+```text
+root.devdb.i483.sensors.s2410431.BH1750_avg.illumination
+```
+
+Panel title:
+
+```text
+2(b) BH1750 Rolling Average
+```
+
+Query:
+
+```sql
+SELECT illumination
+FROM root.devdb.i483.sensors.s2410431.BH1750_avg
+WHERE time >= $__from AND time <= $__to;
+```
+
+This panel should show only the rolling average series, not the raw BH1750 data.
+
+### 2(c) Kadai 3 Task 1 Flink Analytics
+
+This visualizes the values produced by `task1_flink`.
+
+Panel title:
+
+```text
+2(c) Flink Analytics SCD41 CO2
+```
+
+Query:
+
+```sql
+SELECT SCD41_min_co2, SCD41_max_co2, SCD41_avg_co2
+FROM root.devdb.i483.sensors.s2410431.analytics
+WHERE time >= $__from AND time <= $__to;
+```
+
+This shows the Flink-computed minimum, maximum, and average for the latest
+5-minute window, emitted every 30 seconds.
+
+### 2(d) IoTDB Aggregation
+
+This uses IoTDB aggregation directly on the raw data, so it can be compared
+against the Flink analytics result.
+
+Panel title:
+
+```text
+2(d) IoTDB Aggregation SCD41 CO2
+```
+
+Query:
+
+```sql
+SELECT MIN_VALUE(co2), MAX_VALUE(co2), AVG(co2)
+FROM root.devdb.i483.sensors.s2410431.SCD41
+GROUP BY ([$__from, $__to), 30s, 5m);
+```
+
+This mirrors the Task 1 requirement: every 30 seconds, use the latest 5 minutes.
+
+## Grafana Click Steps
+
+1. Open the dashboard URL.
+2. Click `Add` / `Add visualization` / `Add panel`.
+3. Choose the IoTDB data source.
+4. Use `SQL: Full Customized`.
+5. Fill Grafana's `SELECT`, `FROM`, `WHERE`, and `CONTROL` boxes separately.
+   Do not paste the whole SQL statement into one box.
+6. Click the refresh button or open `Query inspector` after changing a query.
+7. Set visualization type to `Time series`.
+8. Set the panel title.
+9. Click `Apply`.
+10. Repeat for all four panels.
+11. Click the dashboard save icon.
+
+Important notes from the lecture slides:
+
+- Always click `Apply` and save the dashboard.
+- Query changes may need the refresh button or `Query inspector` to run.
+- Time conditions should follow the dashboard time picker.
+- For custom time aggregation, use Grafana variables `$__from` and `$__to`
+  with two underscores.
+
+## Grafana Box Inputs
+
+Use these values in the IoTDB query editor.
+
+### 2(a)
+
+```text
+SELECT: co2
+FROM: root.devdb.i483.sensors.s2410431.SCD41
+WHERE: time >= $__from AND time <= $__to
+CONTROL:
+```
+
+### 2(b)
+
+```text
+SELECT: illumination
+FROM: root.devdb.i483.sensors.s2410431.BH1750_avg
+WHERE: time >= $__from AND time <= $__to
+CONTROL:
+```
+
+### 2(c)
+
+```text
+SELECT: SCD41_min_co2, SCD41_max_co2, SCD41_avg_co2
+FROM: root.devdb.i483.sensors.s2410431.analytics
+WHERE: time >= $__from AND time <= $__to
+CONTROL:
+```
+
+### 2(d)
+
+```text
+SELECT: MIN_VALUE(co2), MAX_VALUE(co2), AVG(co2)
+FROM: root.devdb.i483.sensors.s2410431.SCD41
+WHERE:
+CONTROL: GROUP BY ([$__from, $__to), 30s, 5m)
+```
+
+For a quick connection test:
+
+```text
+SELECT: co2
+FROM: root.devdb.i483.sensors.s2410431.SCD41
+WHERE:
+CONTROL: LIMIT 10
+```
+
+## If A Query Returns No Data
+
+First check whether the time series exists:
+
+```sql
+SHOW TIMESERIES root.devdb.i483.sensors.s2410431.**
+```
+
+For Task 2(c), check analytics specifically:
+
+```sql
+SHOW TIMESERIES root.devdb.i483.sensors.s2410431.analytics.**
+```
+
+If analytics series do not exist in IoTDB, run `kafka_to_iotdb.py` to bridge
+your Kafka analytics topics into IoTDB. If they already exist, no bridge is
+needed.
