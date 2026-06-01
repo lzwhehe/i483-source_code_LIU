@@ -4,13 +4,14 @@ I483 Kadai 3 - Task 1(a)(b) Stream Analytics with Apache Flink / PyFlink.
 This follows the supplementary Kadai 3 slides:
   1. consume the shared Kafka topic i483-allsensors
   2. validate records formatted as topic,timestamp,value
-  3. filter to this student's primary sensor topics
+  3. validate sensor topics and process all students' sensor records by default
   4. key by the original sensor topic
   5. compute min / max / avg with a 5-minute sliding processing-time window
      that emits every 30 seconds
   6. publish every result to i483-fvtt as topic,value
 """
 
+import re
 from pathlib import Path
 
 from pyflink.common import Time, Types, WatermarkStrategy
@@ -32,6 +33,9 @@ import config
 PROJECT_ROOT = Path(__file__).resolve().parent
 KAFKA_CONNECTOR_JAR = (
     PROJECT_ROOT / ".tools" / "jars" / "flink-sql-connector-kafka-3.0.2-1.18.jar"
+)
+SENSOR_TOPIC_RE = re.compile(
+    r"^i483-sensors-(?P<student>s[0-9]+)-(?P<sensor>[A-Z0-9]+)-(?P<data_type>[a-z0-9_]+)$"
 )
 
 
@@ -57,7 +61,11 @@ def parse_allsensors_record(record: str):
         return []
 
     topic, timestamp_text, value_text = parts
-    if topic not in config.INPUT_TOPICS:
+    parsed_topic = parse_sensor_topic(topic)
+    if parsed_topic is None:
+        return []
+
+    if not config.PROCESS_ALL_STUDENTS and topic not in config.INPUT_TOPICS:
         return []
 
     try:
@@ -69,18 +77,18 @@ def parse_allsensors_record(record: str):
     return [(topic, timestamp_ms, value)]
 
 
-def sensor_dtype_from_topic(topic: str):
-    prefix = f"i483-sensors-{config.STUDENT}-"
-    if not topic.startswith(prefix):
+def parse_sensor_topic(topic: str):
+    match = SENSOR_TOPIC_RE.match(topic)
+    if match is None:
         return None
 
-    rest = topic[len(prefix):]
-    try:
-        sensor, data_type = rest.split("-", 1)
-    except ValueError:
+    student = match.group("student")
+    sensor = match.group("sensor")
+    data_type = match.group("data_type")
+    if data_type not in config.ALLOWED_DATA_TYPES:
         return None
 
-    return sensor, data_type
+    return student, sensor, data_type
 
 
 class EmitMinMaxAvg(ProcessWindowFunction):
@@ -89,10 +97,10 @@ class EmitMinMaxAvg(ProcessWindowFunction):
         if not values:
             return []
 
-        parsed = sensor_dtype_from_topic(str(key))
+        parsed = parse_sensor_topic(str(key))
         if parsed is None:
             return []
-        sensor, data_type = parsed
+        student, sensor, data_type = parsed
 
         stats = {
             "min": min(values),
@@ -102,7 +110,7 @@ class EmitMinMaxAvg(ProcessWindowFunction):
 
         output = []
         for agg in config.AGGREGATIONS:
-            topic = config.output_topic(sensor, agg, data_type)
+            topic = config.output_topic(sensor, agg, data_type, student=student)
             output.append(f"{topic},{_fmt(stats[agg])}")
         return output
 

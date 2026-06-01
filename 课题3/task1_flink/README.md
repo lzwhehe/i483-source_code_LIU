@@ -26,7 +26,10 @@ into IoTDB for Grafana visualization.
 - Reads `i483-allsensors`.
 - Validates each record so malformed messages are ignored instead of crashing
   the Flink job.
-- Keeps only this student's primary sensor topics:
+- Processes every valid student sensor record seen in `i483-allsensors` by
+  default. The output topic keeps the student id from the input topic, so
+  another student's data is written under that student's analytics topic.
+- Your primary sensor topics are:
   - `SCD41/co2`
   - `SCD41/temperature`
   - `SCD41/humidity`
@@ -63,7 +66,8 @@ This is a streaming job, so it keeps running until you press `Ctrl + C`.
 
 ## Verify Output
 
-Open a second PowerShell window while the Flink job is running:
+Open a second PowerShell window while the Flink job is running. The verification
+script filters `i483-fvtt` and prints this student's analytics messages:
 
 ```powershell
 .\verify_analytics_topics.ps1 --seconds 120

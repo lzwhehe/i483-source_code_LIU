@@ -25,6 +25,10 @@ CONSUMER_GROUP = f"{STUDENT}-task1-analytics"
 ALLSENSORS_TOPIC = "i483-allsensors"
 FVTT_TOPIC = "i483-fvtt"
 
+# When True, process every valid student sensor record seen in i483-allsensors.
+# Output topics preserve the student id from each input topic.
+PROCESS_ALL_STUDENTS = True
+
 # ---------------------------------------------------------------------------
 # 2) WINDOWING (fixed by the assignment)
 #    "30秒ごとに計算し、毎回最近の5分間のデータを利用する"
@@ -51,6 +55,15 @@ SENSORS = [
     ("DPS310",  "air_pressure"),
 ]
 
+ALLOWED_DATA_TYPES = {
+    "temperature",
+    "humidity",
+    "co2",
+    "air_pressure",
+    "illumination",
+    "infrared_illumination",
+}
+
 # Aggregations to publish.  Spec requires min, max, avg.
 AGGREGATIONS = ("min", "max", "avg")
 
@@ -69,9 +82,9 @@ def input_topic(sensor: str, data_type: str) -> str:
     return f"i483-sensors-{STUDENT}-{sensor}-{data_type}"
 
 
-def output_topic(sensor: str, agg: str, data_type: str) -> str:
+def output_topic(sensor: str, agg: str, data_type: str, student: str = STUDENT) -> str:
     # i483-sensors-<STUDENT>-analytics-<STUDENT>_<SENSOR>_<agg>-<DATA_TYPE>
-    return f"i483-sensors-{STUDENT}-analytics-{STUDENT}_{sensor}_{agg}-{data_type}"
+    return f"i483-sensors-{student}-analytics-{student}_{sensor}_{agg}-{data_type}"
 
 
 INPUT_TOPICS = {input_topic(sensor, data_type) for sensor, data_type in SENSORS}
